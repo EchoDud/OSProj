@@ -3,10 +3,9 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
-#include <algorithm> // Для сортировки
+#include <algorithm>
 #include <dirent.h>
 #include <iomanip>
-#include <unistd.h>
 #include <cstring>
 
 // Цвета для терминала
@@ -23,35 +22,72 @@ struct Process {
     std::string state;
 };
 
+// Получение списка всех процессов
 std::vector<Process> get_all_processes() {
     std::vector<Process> processes;
     DIR* dir = opendir("/proc");
-    struct dirent* entry;
+    if (!dir) {
+        std::cerr << RED << "Error: Unable to open /proc directory" << RESET << "\n";
+        return processes;
+    }
 
+    struct dirent* entry;
     while ((entry = readdir(dir)) != nullptr) {
         if (!isdigit(entry->d_name[0])) continue;
 
         int pid = std::stoi(entry->d_name);
         std::ifstream stat_file("/proc/" + std::to_string(pid) + "/stat");
-        if (!stat_file.is_open()) continue;
+        if (!stat_file.is_open()) {
+            std::cerr << YELLOW << "Warning: Unable to open /proc/" << pid << "/stat" << RESET << "\n";
+            continue;
+        }
 
         Process proc{};
         stat_file >> proc.pid >> proc.name >> proc.state >> proc.ppid;
-        proc.name.erase(proc.name.begin());
-        proc.name.erase(proc.name.end() - 1);
+
+        if (!proc.name.empty() && proc.name.front() == '(' && proc.name.back() == ')') {
+            proc.name = proc.name.substr(1, proc.name.size() - 2); // Удаление скобок
+        }
 
         processes.push_back(proc);
     }
+
     closedir(dir);
     return processes;
 }
 
-void get_process_info(int pid) {
-    std::string status_file = "/proc/" + std::to_string(pid) + "/status";
-    std::ifstream file(status_file);
+// Вывод всех процессов
+void list_processes() {
+    auto processes = get_all_processes();
+    if (processes.empty()) {
+        std::cout << YELLOW << "No processes found." << RESET << "\n";
+        return;
+    }
 
+    std::cout << BLUE << std::left
+              << std::setw(10) << "PID"
+              << std::setw(25) << "Name"
+              << std::setw(10) << "PPID"
+              << "State" << RESET << "\n";
+    std::cout << std::string(50, '-') << "\n";
+
+    for (const auto& proc : processes) {
+        std::string color = proc.state == "R" ? GREEN : (proc.state == "S" ? YELLOW : RED);
+        std::string truncated_name = proc.name.size() > 24 ? proc.name.substr(0, 24) + "..." : proc.name;
+
+        std::cout << std::left
+                  << std::setw(10) << proc.pid
+                  << std::setw(25) << truncated_name
+                  << std::setw(10) << proc.ppid
+                  << color << proc.state << RESET << "\n";
+    }
+}
+
+// Получение подробной информации о процессе
+void get_process_info(int pid) {
+    std::ifstream file("/proc/" + std::to_string(pid) + "/status");
     if (!file.is_open()) {
-        std::cerr << "Error: Could not open " << status_file << "\n";
+        std::cerr << RED << "Error: Could not open /proc/" << pid << "/status" << RESET << "\n";
         return;
     }
 
@@ -62,16 +98,37 @@ void get_process_info(int pid) {
     }
 }
 
-void list_processes() {
+std::string to_lower(const std::string& str) {
+    std::string result = str;
+    std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+    return result;
+}
+
+void filter_processes(const std::string& criterion) {
     auto processes = get_all_processes();
-    std::cout << BLUE << std::left
+    std::vector<Process> filtered;
+
+    std::string lower_criterion = to_lower(criterion);
+    for (const auto& proc : processes) {
+        if (to_lower(proc.name).find(lower_criterion) != std::string::npos) {
+            filtered.push_back(proc);
+        }
+    }
+
+    if (filtered.empty()) {
+        std::cout << YELLOW << "No processes found matching: " << criterion << RESET << "\n";
+        return;
+    }
+
+    std::cout << BLUE << "Filtering by: " << criterion << RESET << "\n";
+    std::cout << std::left
               << std::setw(10) << "PID"
               << std::setw(25) << "Name"
               << std::setw(10) << "PPID"
-              << "State" << RESET << "\n";
+              << "State" << "\n";
     std::cout << std::string(50, '-') << "\n";
 
-    for (const auto& proc : processes) {
+    for (const auto& proc : filtered) {
         std::string color = proc.state == "R" ? GREEN : (proc.state == "S" ? YELLOW : RED);
         std::cout << std::left
                   << std::setw(10) << proc.pid
@@ -81,23 +138,14 @@ void list_processes() {
     }
 }
 
-void filter_processes(const std::string& criterion) {
-    auto processes = get_all_processes();
-    std::cout << BLUE << "Filtering by: " << criterion << RESET << "\n";
 
-    for (const auto& proc : processes) {
-        if (proc.name.find(criterion) != std::string::npos) {
-            std::cout << std::left
-                      << std::setw(10) << proc.pid
-                      << std::setw(25) << proc.name
-                      << std::setw(10) << proc.ppid
-                      << proc.state << "\n";
-        }
-    }
-}
-
+// Сортировка процессов
 void sort_processes(const std::string& criterion) {
     auto processes = get_all_processes();
+    if (processes.empty()) {
+        std::cout << YELLOW << "No processes to sort." << RESET << "\n";
+        return;
+    }
 
     if (criterion == "pid") {
         std::sort(processes.begin(), processes.end(), [](const Process& a, const Process& b) {
@@ -112,10 +160,25 @@ void sort_processes(const std::string& criterion) {
             return a.ppid < b.ppid;
         });
     } else {
-        std::cout << RED << "Unknown sort criterion: " << criterion << RESET << "\n";
+        std::cerr << RED << "Unknown sort criterion: " << criterion << RESET << "\n";
         return;
     }
 
     std::cout << BLUE << "Sorted by: " << criterion << RESET << "\n";
-    list_processes();
+    std::cout << std::left
+              << std::setw(10) << "PID"
+              << std::setw(25) << "Name"
+              << std::setw(10) << "PPID"
+              << "State" << "\n";
+    std::cout << std::string(50, '-') << "\n";
+
+    for (const auto& proc : processes) {
+        std::string color = proc.state == "R" ? GREEN : (proc.state == "S" ? YELLOW : RED);
+        std::cout << std::left
+                  << std::setw(10) << proc.pid
+                  << std::setw(25) << proc.name
+                  << std::setw(10) << proc.ppid
+                  << color << proc.state << RESET << "\n";
+    }
 }
+
