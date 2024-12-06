@@ -43,6 +43,8 @@ int main() {
             sort_processes(tokens[1]);
         } else if (tokens[0] == "exit") {
             break;
+        } else if (tokens[0] == "help"){
+            show_help();
         } else {
             std::cout << "Unknown command. Type 'help' for a list of commands.\n";
         }
